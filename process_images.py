@@ -45,9 +45,9 @@ def get_ground_mask(pred):
     return ground_mask
 
 def simple_refine_ground_mask(ground_mask_bool,
-                              kernel_rel=0.01,
-                              min_area_ratio=0.001,
-                              keep_only_bottom_connected=True):
+                              kernel_rel=0.008,
+                              min_area_ratio=0.0005,
+                              keep_only_bottom_connected=False):
     """
     ground_mask_bool: HxW 的bool初始地面掩码
     kernel_rel: 形态学核大小相对最短边的比例(0.008~0.02常用)
@@ -219,8 +219,8 @@ def process_single_image(model, img_path, save_dir):
     # ---------- 2. 获取地面 mask ----------
     ground_mask = simple_refine_ground_mask(
         get_ground_mask(pred),
-        kernel_rel=0.01,
-        min_area_ratio=0.001,
+        kernel_rel=0.008,
+        min_area_ratio=0.0005,
         keep_only_bottom_connected=True
     )
 
