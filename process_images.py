@@ -15,6 +15,9 @@ GROUND_IDS = [0, 1]  # 0: road, 1: sidewalk
 # 决策规则参数
 TH_GROUND = 0.15        # 地面比例阈值：大于这个值认为“这一块有明显地面”
 DELTA_SIDE = 0.10       # 左右地面比例差值，大于此认定为“多出一侧通路”
+HOLE_MAX_AREA_RATIO = 0.0015   # 填充地面内的小空洞(如树叶)的最大面积占整幅图比例
+OBS_MIN_AREA_RATIO = 0.01      # 认为是“脚下中央障碍”所需的最小面积(相对ROI面积)
+OBS_MIN_WIDTH_RATIO = 0.06     # 认为是“脚下中央障碍”所需的最小水平宽度(相对整图宽度)
 
 # 判定稳定事件所需的帧数（这里只处理单张图片，可设为 1）
 STABLE_FRAMES = 1
@@ -47,7 +50,8 @@ def get_ground_mask(pred):
 def simple_refine_ground_mask(ground_mask_bool,
                               kernel_rel=0.008,
                               min_area_ratio=0.0005,
-                              keep_only_bottom_connected=False):
+                              keep_only_bottom_connected=False,
+                              hole_max_area_ratio=0.0):
     """
     ground_mask_bool: HxW 的bool初始地面掩码
     kernel_rel: 形态学核大小相对最短边的比例(0.008~0.02常用)
@@ -91,11 +95,66 @@ def simple_refine_ground_mask(ground_mask_bool,
 
     # 轻微平滑边界
     keep = cv2.morphologyEx(keep, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+    # 可选：填充小“空洞”（如小树叶遮挡）以避免误判为障碍
+    if hole_max_area_ratio and hole_max_area_ratio > 0:
+        mask_bin = (keep > 0).astype(np.uint8)  # 1: ground, 0: background
+        inv = (255 - mask_bin * 255).copy()     # 255: background, 0: ground
+        flood_mask = np.zeros((H + 2, W + 2), np.uint8)  # floodFill 需要比图像大2的掩码
+        cv2.floodFill(inv, flood_mask, (0, 0), 0)       # 去掉与外边界连通的背景
+        holes = (inv == 255)                              # 剩下的255即为地面内部“洞”
+
+        num_h, labels_h, stats_h, _ = cv2.connectedComponentsWithStats(holes.astype(np.uint8), connectivity=8)
+        hole_area_th = H * W * float(hole_max_area_ratio)
+        for i_h in range(1, num_h):
+            if stats_h[i_h, cv2.CC_STAT_AREA] <= hole_area_th:
+                keep[labels_h == i_h] = 255
+
     return (keep > 0)
 
 ############################
 # 4. 根据 ground_mask 计算决策点事件（单张图）
 ############################
+
+def suppress_small_roi_obstacles(ground_mask,
+                                 obs_min_area_ratio=0.01,
+                                 obs_min_width_ratio=0.06,
+                                 roi_top_rel=0.5):
+    """
+    在事件检测前对 ground_mask 做一次“误障碍抑制”：
+    - 仅针对 ROI(下半部分) 内的 非地面 斑块做处理；
+    - 将面积很小 或 水平宽度很窄 的斑块视为树叶等小遮挡，直接填回地面。
+
+    参数:
+    ground_mask: HxW bool, True 为地面
+    obs_min_area_ratio: 小斑块面积阈值(相对 ROI 面积)
+    obs_min_width_ratio: 小斑块最小宽度(相对整图宽度)
+    roi_top_rel: ROI 顶部相对高度, 默认 0.5 即下半幅
+    """
+    H, W = ground_mask.shape
+    top = int(H * float(roi_top_rel))
+    roi = ground_mask[top:, :].copy()
+
+    # 非地面区域
+    obs = (~roi).astype(np.uint8)
+    num, labels, stats, _ = cv2.connectedComponentsWithStats(obs, connectivity=8)
+    if num <= 1:
+        return ground_mask
+
+    roi_area = roi.shape[0] * roi.shape[1]
+    area_th = roi_area * float(obs_min_area_ratio)
+    width_th = W * float(obs_min_width_ratio)
+
+    for i in range(1, num):
+        area = stats[i, cv2.CC_STAT_AREA]
+        width = stats[i, cv2.CC_STAT_WIDTH]
+        if area < area_th or width < width_th:
+            # 将该小障碍斑块恢复为地面
+            roi[labels == i] = True
+
+    out = ground_mask.copy()
+    out[top:, :] = roi
+    return out
 
 def detect_outdoor_events(ground_mask,
                           th_ground=TH_GROUND,
@@ -221,11 +280,19 @@ def process_single_image(model, img_path, save_dir):
         get_ground_mask(pred),
         kernel_rel=0.008,
         min_area_ratio=0.0005,
-        keep_only_bottom_connected=True
+        keep_only_bottom_connected=True,
+        hole_max_area_ratio=HOLE_MAX_AREA_RATIO
+    )
+
+    # 针对事件检测：抑制 ROI 内很小且很窄的“非地面”斑块（如树叶）
+    ground_mask_evt = suppress_small_roi_obstacles(
+        ground_mask,
+        obs_min_area_ratio=OBS_MIN_AREA_RATIO,
+        obs_min_width_ratio=OBS_MIN_WIDTH_RATIO
     )
 
     # ---------- 3. 检测决策点 ----------
-    events = detect_outdoor_events(ground_mask)
+    events = detect_outdoor_events(ground_mask_evt)
 
     if not events:
         # 没有任何决策点，就不保存（根据你需求可改为仍然保存）
@@ -233,7 +300,7 @@ def process_single_image(model, img_path, save_dir):
         return
 
     # ---------- 4. 叠加可视化（可选） ----------
-    vis = overlay_ground_mask(img, ground_mask)
+    vis = overlay_ground_mask(img, ground_mask_evt)
 
     # 也可以在图像上写上事件文字方便调试
     y0 = 30
