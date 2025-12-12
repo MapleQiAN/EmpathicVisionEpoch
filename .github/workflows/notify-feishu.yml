@@ -1,0 +1,28 @@
+name: Notify Feishu on Push
+
+on:
+  push:
+    branches:
+      - main   # 你要监控的分支，可改成 master 或所有分支
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send Feishu Notification
+        run: |
+          MESSAGE="🔔 仓库更新：${{ github.repository }}%0A\
+👤 提交者：${{ github.actor }}%0A\
+📄 分支：${{ github.ref_name }}%0A\
+📝 提交信息：${{ github.event.head_commit.message }}"
+
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"msg_type\": \"text\",
+              \"content\": {
+                \"text\": \"$MESSAGE\"
+              }
+            }" \
+            ${{ secrets.FEISHU_WEBHOOK }}
