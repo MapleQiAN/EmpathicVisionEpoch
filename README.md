@@ -4,6 +4,18 @@
 - demo.py：使用 PaddleX 预置的语义分割 pipeline 对单张图片进行预测，保存可视化结果与 JSON。
 - process_images.py：加载本地导出的 PaddleX 语义分割推理模型，遍历 data/ 下的图片，提取“可行走地面”并进行简单的通行事件检测（如转弯、十字、丁字、中央可绕行障碍），保存带可视化覆盖和事件标签的结果图到 res/。
 
+## 目录
+
+- [目录结构](#目录结构)
+- [环境依赖](#环境依赖)
+- [快速开始](#快速开始)
+- [事件检测规则概览](#事件检测规则概览)
+- [算法流程图](#算法流程图)
+- [可视化与保存行为](#可视化与保存行为)
+- [常见问题排查](#常见问题排查)
+- [许可与数据](#许可与数据)
+- [致谢](#致谢)
+
 ## 目录结构
 
 - demo.py：单图演示脚本（自动下载/使用 PaddleX 预置模型）。
@@ -90,6 +102,45 @@ python demo.py
 - OBSTACLE_CENTER_BYPASSABLE：中央地面不足，但至少一侧可绕行。
 
 可根据场景对阈值进行微调以取得更稳定的识别效果。
+
+## 算法流程图
+
+下面给出 process_images.py 的核心处理流程（含分割、后处理与事件判定）。可在支持 Mermaid 的渲染器（如 GitHub/GitLab/VS Code 插件）中直接预览。
+
+```mermaid
+flowchart TD
+    A[开始] --> B[加载配置与阈值]
+    B --> C{模式选择}
+    C -->|demo.py| D[create_pipeline 语义分割]
+    C -->|process_images.py| E[加载本地推理模型]
+    D --> F[读取输入图像]
+    E --> F
+    F --> G[语义分割推理 -> 类别图 seg_map]
+    G --> H[生成地面掩码 mask\n(类别ID ∈ {0,1})]
+    H --> I[形态学与抑制\n- 填补细小空洞\n- 去除过小/过窄障碍]
+    I --> J[截取 ROI: 图像下半部分]
+    J --> K[横向划分 ROI: 左/中/右]
+    K --> L[统计每块地面比例 pL,pC,pR]
+    L --> M{事件判定}
+    M -->|pC ≥ TH 且 pL - pC ≥ Δ| N[TURN_LEFT]
+    M -->|pC ≥ TH 且 pR - pC ≥ Δ| O[TURN_RIGHT]
+    M -->|pL ≥ TH 且 pC ≥ TH 且 pR ≥ TH| P[CROSS]
+    M -->|pC < TH 且 (pL ≥ TH 或 pR ≥ TH)| Q[OBSTACLE_CENTER_BYPASSABLE]
+    M -->|pC < TH 且 pL ≥ TH 且 pR ≥ TH| R[T_JUNCTION / STOP_AHEAD]
+    N --> S[叠加可视化与事件标签]
+    O --> S
+    P --> S
+    Q --> S
+    R --> S
+    S --> T[保存至 res/ 并依据事件重命名]
+    T --> U[结束]
+```
+
+流程要点：
+- 分割输出解析为 H×W 类别图，再转为“地面”二值掩码。
+- 通过小洞填充与小障碍抑制，降低噪声影响。
+- ROI 仅取下半部分，更贴近日常行走视野；横向三分便于侧向通路判断。
+- 根据阈值 TH_GROUND 与差异 DELTA_SIDE 等进行事件判定，可多事件并存。
 
 ## 可视化与保存行为
 
