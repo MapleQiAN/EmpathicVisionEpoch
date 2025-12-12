@@ -6,7 +6,7 @@ from collections import deque
 from paddlex import create_pipeline
 
 ############################
-# 1. 参数与配置 test
+# 1. 参数与配置
 ############################
 
 # Cityscapes 中可行走地面的类别 id
