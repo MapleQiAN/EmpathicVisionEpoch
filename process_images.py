@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 import argparse
 import json
-from paddlex import create_pipeline
+from paddlex import create_pipeline, create_model
 
 ############################
 # 1. 参数与配置
@@ -19,16 +19,13 @@ HOLE_MAX_AREA_RATIO = 0.0015   # 填充地面内的小空洞(如树叶)的最大
 OBS_MIN_AREA_RATIO = 0.01      # 认为是“脚下中央障碍”所需的最小面积(相对ROI面积)
 OBS_MIN_WIDTH_RATIO = 0.06     # 认为是“脚下中央障碍”所需的最小水平宽度(相对整图宽度)
 
-# 判定稳定事件所需的帧数（这里只处理单张图片，可设为 1）
-STABLE_FRAMES = 1
-
-# 输入输出文件夹
+# 输入输出文件夹默认值
 DATA_DIR = "data"   # 输入图片目录
 RES_DIR = "res"     # 输出结果目录
 
 
 ############################
-# 2. 使用本地导出模型创建 PaddleX 语义分割管线（按官方文档方式）
+# 2A. 使用本地导出配置创建 PaddleX 语义分割管线
 ############################
 
 def _find_seg_config(path: str) -> str:
@@ -83,7 +80,7 @@ def _load_config_to_dict(cfg_path: str) -> dict:
             raise ValueError(f"JSON 配置解析后不是字典类型: {type(cfg)}")
         return cfg
     else:
-        # 部分版本也可能是其它命名，但通常内容仍为 yaml，尝试 yaml 解析作为兜底
+        # 兜底尝试按 YAML 解析
         try:
             import yaml
             with open(cfg_path, "r", encoding="utf-8") as f:
@@ -124,52 +121,111 @@ def _make_paths_absolute(obj, base_dir: str):
         return obj
 
 
-def load_seg_pipeline_local(model_path: str):
+def load_seg_pipeline_local(config_path: str, device: str | None = None):
     """
-    按 PaddleX 文档推荐：通过本地导出的 config 文件来创建语义分割管线，
-    确保不会使用 PaddleX 内置/在线模型。
-
-    参考文档: https://paddlepaddle.github.io/PaddleX/latest/module_usage/tutorials/cv_modules/semantic_segmentation.html
+    通过本地导出的 config 文件来创建语义分割管线，
+    并可选强制指定推理设备（覆盖配置文件中的 device）。
     """
-    cfg_path = _find_seg_config(model_path)
+    cfg_path = _find_seg_config(config_path)
 
-    # 读取配置为 dict，按你当前 PaddleX 版本的 create_pipeline 期望传入 dict
+    # 读取配置为 dict
     config_dict = _load_config_to_dict(cfg_path)
-    if not isinstance(config_dict, dict):
-        raise TypeError("配置对象不是字典，无法用于 create_pipeline(config=...)")
 
-    # 尝试将其中的相对路径改为绝对路径（相对 cfg 所在目录）
+    # 路径转为绝对路径
     base_dir = os.path.dirname(os.path.abspath(cfg_path))
     config_dict = _make_paths_absolute(config_dict, base_dir)
 
-    # 如果导出配置里未包含 pipeline_name，补充默认值避免内部取键报错
+    # 补充/覆盖设备
+    if device:
+        config_dict["device"] = device
+
+    # 补充管线名称，避免内部取键报错
     if "pipeline_name" not in config_dict:
         config_dict["pipeline_name"] = "semantic_segmentation"
 
-    # 先尝试新版 API：仅传 config=dict
+    # 先尝试仅传 config=dict
+    last_err = None
     try:
         pipeline = create_pipeline(config=config_dict)
         print(f"[INFO] 已使用本地配置创建分割管线: {cfg_path}")
         return pipeline
-    except Exception as e1:
-        # 兼容某些版本：需要显式传 pipeline 名称（同时传 dict）
-        try:
-            pipeline = create_pipeline(pipeline="semantic_segmentation", config=config_dict)
-            print(f"[INFO] 已使用本地配置创建分割管线(兼容模式1): {cfg_path}")
-            return pipeline
-        except Exception as e2:
-            # 极少数版本参数名不同（pipeline_config）
-            try:
-                pipeline = create_pipeline(pipeline="semantic_segmentation", pipeline_config=config_dict)
-                print(f"[INFO] 已使用本地配置创建分割管线(兼容模式2): {cfg_path}")
-                return pipeline
-            except Exception as e3:
-                raise RuntimeError(
-                    "创建 PaddleX 语义分割管线失败，请检查 PaddleX 版本与导出配置是否匹配。\n"
-                    f"cfg: {cfg_path}\n"
-                    f"错误链: {repr(e1)} -> {repr(e2)} -> {repr(e3)}"
-                )
+    except Exception as e:
+        last_err = e
+    # 兼容传 pipeline 名称
+    try:
+        pipeline = create_pipeline(pipeline="semantic_segmentation", config=config_dict)
+        print(f"[INFO] 已使用本地配置创建分割管线(兼容模式1): {cfg_path}")
+        return pipeline
+    except Exception as e:
+        last_err = e
+    # 兼容 pipeline_config 命名
+    try:
+        pipeline = create_pipeline(pipeline="semantic_segmentation", pipeline_config=config_dict)
+        print(f"[INFO] 已使用本地配置创建分割管线(兼容模式2): {cfg_path}")
+        return pipeline
+    except Exception as e:
+        last_err = e
+        raise RuntimeError(
+            "创建 PaddleX 语义分割管线失败，请检查 PaddleX 版本与导出配置是否匹配。\n"
+            f"cfg: {cfg_path}\n"
+            f"错误: {repr(last_err)}"
+        )
 
+
+############################
+# 2B. 使用 create_model 方式加载特定模型与设备
+############################
+
+def _parse_target_size(arg_val: str | None):
+    """
+    将命令行传入的 target_size 字符串解析为 int/tuple/None：
+    - None 或 "none" -> None
+    - "-1" -> -1
+    - "512" -> 512
+    - "512,512" 或 "512x512" 或 "512*512" -> (512, 512)
+    """
+    if arg_val is None:
+        return None
+    s = str(arg_val).strip().lower()
+    if s in ["", "none", "null"]:
+        return None
+    if s == "-1":
+        return -1
+    # tuple 形式
+    for sep in [",", "x", "*"]:
+        if sep in s:
+            a, b = s.split(sep, 1)
+            return (int(a.strip()), int(b.strip()))
+    # 单 int
+    return int(s)
+
+
+def load_seg_model_api(model_name: str, model_dir: str | None, device: str, target_size, use_hpip: bool, hpi_config: dict | None):
+    """
+    按文档使用 create_model 直接创建模型：可指定 model_name、model_dir、device、target_size 等。
+    - 指定 model_name 后，若同时提供 model_dir，会从该目录加载你的自定义权重。
+    - device 支持 "gpu:0"/"cpu"/"npu:0" 等。
+    """
+    kwargs = {
+        "model_name": model_name,
+        "device": device,
+        "use_hpip": use_hpip,
+    }
+    if model_dir:
+        kwargs["model_dir"] = model_dir
+    if target_size is not None:
+        kwargs["target_size"] = target_size
+    if hpi_config is not None:
+        kwargs["hpi_config"] = hpi_config
+
+    model = create_model(**kwargs)
+    print(f"[INFO] 已通过 create_model 加载模型: name={model_name}, dir={model_dir}, device={device}, target_size={target_size}")
+    return model
+
+
+############################
+# 3. 业务逻辑（ground_mask 处理/事件判定/可视化）
+############################
 
 def get_ground_mask(pred):
     """
@@ -185,16 +241,10 @@ def simple_refine_ground_mask(ground_mask_bool,
                               min_area_ratio=0.0005,
                               keep_only_bottom_connected=False,
                               hole_max_area_ratio=0.0):
-    """
-    ground_mask_bool: HxW 的bool初始地面掩码
-    kernel_rel: 形态学核大小相对最短边的比例(0.008~0.02常用)
-    min_area_ratio: 连通域最小面积占比(0.0005~0.003常用)
-    keep_only_bottom_connected: 仅保留与底边相连的连通域
-    """
     H, W = ground_mask_bool.shape
     b = (ground_mask_bool.astype(np.uint8) * 255)
 
-    # 形态学：先闭后开（填缝、去小噪）
+    # 形态学：先闭后开
     k = max(3, int(min(H, W) * float(kernel_rel)))
     if k % 2 == 0:
         k += 1
@@ -210,7 +260,6 @@ def simple_refine_ground_mask(ground_mask_bool,
     area_th = H * W * float(min_area_ratio)
     keep = np.zeros((H, W), dtype=np.uint8)
 
-    # 与底边相连判定
     def touches_bottom(lbl_id):
         return np.any(labels[-1, :] == lbl_id) or np.any(labels[-2, :] == lbl_id)
 
@@ -221,21 +270,18 @@ def simple_refine_ground_mask(ground_mask_bool,
                 keep[labels == i] = 255
                 kept_ids.append(i)
 
-    # 如果严格与底边相连后一个都没保留，兜底保留最大连通域
     if keep_only_bottom_connected and len(kept_ids) == 0:
         i = np.argmax(stats[1:, cv2.CC_STAT_AREA]) + 1
         keep[labels == i] = 255
 
-    # 轻微平滑边界
     keep = cv2.morphologyEx(keep, cv2.MORPH_CLOSE, kernel, iterations=1)
 
-    # 可选：填充小“空洞”（如小树叶遮挡）以避免误判为障碍
     if hole_max_area_ratio and hole_max_area_ratio > 0:
-        mask_bin = (keep > 0).astype(np.uint8)  # 1: ground, 0: background
-        inv = (255 - mask_bin * 255).copy()     # 255: background, 0: ground
-        flood_mask = np.zeros((H + 2, W + 2), np.uint8)  # floodFill 需要比图像大2的掩码
-        cv2.floodFill(inv, flood_mask, (0, 0), 0)       # 去掉与外边界连通的背景
-        holes = (inv == 255)                              # 剩下的255即为地面内部“洞”
+        mask_bin = (keep > 0).astype(np.uint8)
+        inv = (255 - mask_bin * 255).copy()
+        flood_mask = np.zeros((H + 2, W + 2), np.uint8)
+        cv2.floodFill(inv, flood_mask, (0, 0), 0)
+        holes = (inv == 255)
 
         num_h, labels_h, stats_h, _ = cv2.connectedComponentsWithStats(holes.astype(np.uint8), connectivity=8)
         hole_area_th = H * W * float(hole_max_area_ratio)
@@ -245,25 +291,11 @@ def simple_refine_ground_mask(ground_mask_bool,
 
     return (keep > 0)
 
-############################
-# 4. 根据 ground_mask 计算决策点事件（单张图）
-############################
 
 def suppress_small_roi_obstacles(ground_mask,
                                  obs_min_area_ratio=0.01,
                                  obs_min_width_ratio=0.06,
                                  roi_top_rel=0.5):
-    """
-    在事件检测前对 ground_mask 做一次“误障碍抑制”：
-    - 仅针对 ROI(下半部分) 内的 非地面 斑块做处理；
-    - 将面积很小 或 水平宽度很窄 的斑块视为树叶等小遮挡，直接填回地面。
-
-    参数:
-    ground_mask: HxW bool, True 为地面
-    obs_min_area_ratio: 小斑块面积阈值(相对 ROI 面积)
-    obs_min_width_ratio: 小斑块最小宽度(相对整图宽度)
-    roi_top_rel: ROI 顶部相对高度, 默认 0.5 即下半幅
-    """
     H, W = ground_mask.shape
     top = int(H * float(roi_top_rel))
     roi = ground_mask[top:, :].copy()
@@ -282,7 +314,6 @@ def suppress_small_roi_obstacles(ground_mask,
         area = stats[i, cv2.CC_STAT_AREA]
         width = stats[i, cv2.CC_STAT_WIDTH]
         if area < area_th or width < width_th:
-            # 将该小障碍斑块恢复为地面
             roi[labels == i] = True
 
     out = ground_mask.copy()
@@ -293,26 +324,16 @@ def suppress_small_roi_obstacles(ground_mask,
 def detect_outdoor_events(ground_mask,
                           th_ground=TH_GROUND,
                           delta_side=DELTA_SIDE):
-    """
-    输入: ground_mask (H x W, bool)
-    输出: events: list of (type, direction)
-       type 可为: "TURN", "CROSS", "T_JUNCTION", "OBSTACLE_CENTER_BYPASSABLE"
-       direction: "LEFT", "RIGHT", "AHEAD" 或 None
-    """
     events = []
 
     h, w = ground_mask.shape
+    roi = ground_mask[int(h * 0.5):, :]
 
-    # 下半部分代表视障者脚前区域
-    roi = ground_mask[int(h * 0.5):, :]  # 可根据实际情况调整 0.5 的比例
-
-    # 左中右三块
     left = roi[:, :w // 3]
     center = roi[:, w // 3: 2 * w // 3]
     right = roi[:, 2 * w // 3:]
 
     def ratio(region):
-        # region 是 bool 数组, True 表示地面
         return float(np.mean(region))
 
     gl = ratio(left)
@@ -321,37 +342,21 @@ def detect_outdoor_events(ground_mask,
 
     straight = gc > th_ground
 
-    # 1. 右侧出现明显新通路(右侧地面多于左侧且明显大)
     if straight and (gr - gl) > delta_side and gr > th_ground:
         events.append(("TURN", "RIGHT"))
-
-    # 2. 左侧出现明显新通路
     if straight and (gl - gr) > delta_side and gl > th_ground:
         events.append(("TURN", "LEFT"))
-
-    # 3. 十字路口/大路口：三块都有不少地面
     if gc > th_ground and gl > th_ground and gr > th_ground:
         events.append(("CROSS", "AHEAD"))
-
-    # 4. 丁字路口：前方地面少，但两侧多
     if gc < th_ground and gl > th_ground and gr > th_ground:
         events.append(("T_JUNCTION", "STOP_AHEAD"))
-
-    # 5. 中央有障碍，但左右至少一侧可绕行
     if gc < th_ground and (gl > th_ground or gr > th_ground):
         events.append(("OBSTACLE_CENTER_BYPASSABLE", None))
 
     return events
 
-############################
-# 5. 事件转成字符串（用于文件名）
-############################
 
 def event_to_tag(event):
-    """
-    event: (type, direction)
-    输出: 例如 'TURN_LEFT', 'CROSS', 'T_JUNCTION', 'OBSTACLE_CENTER_BYPASSABLE'
-    """
     etype, edir = event
     if etype == "TURN":
         if edir == "RIGHT":
@@ -370,9 +375,6 @@ def event_to_tag(event):
 
 
 def overlay_ground_mask(image, ground_mask, alpha=0.4):
-    """
-    将地面区域以半透明绿色覆盖到原图上，帮助可视化。
-    """
     vis = image.copy()
     green = np.zeros_like(vis, dtype=np.uint8)
     green[:] = (0, 255, 0)
@@ -385,13 +387,11 @@ def overlay_ground_mask(image, ground_mask, alpha=0.4):
 
 
 ############################
-# 6. 解析 PaddleX predict 输出为 HxW 类别图
+# 4. 解析 PaddleX predict 输出为 HxW 类别图
 ############################
 
 def _to_hxw_pred_array(data):
-    """将多种可能的数据结构转换为 HxW 的 np.ndarray(int)。失败则抛错。"""
     arr = None
-    # 常见：list[list[...] ] 或 np.ndarray
     if isinstance(data, np.ndarray):
         arr = data
     else:
@@ -402,7 +402,6 @@ def _to_hxw_pred_array(data):
     if arr is None:
         raise ValueError("无法将预测结果转换为 ndarray")
 
-    # 兼容可能的形状： (H,W), (1,H,W), (H,W,1)
     if arr.ndim == 3 and arr.shape[0] == 1:
         arr = arr[0]
     if arr.ndim == 3 and arr.shape[-1] == 1:
@@ -417,50 +416,38 @@ def _to_hxw_pred_array(data):
 
 def parse_pred_from_output(output):
     """
-    尝试从 PaddleX pipeline 的 predict 返回结果中解析出 HxW 的类别图。
-    兼容多种字段命名：'res'/'result' 下的 'pred'/'label_map'/'seg_map' 等。
+    兼容多版本的返回结构，解析出 HxW 的类别图。
+    优先尝试 data['res']['pred'][0]，也尝试 data['result'] 下的 label_map/pred/seg_map。
     """
-    # 取到一个 dict
     data = None
-    # 1) output 可能是迭代器/列表，元素带 .json
     try:
         for res in output:
             if hasattr(res, 'json'):
                 data = res.json
                 break
     except TypeError:
-        # output 不可迭代
         pass
 
-    # 2) 如果没取到，可能本身就是 dict
     if data is None and isinstance(output, dict):
         data = output
 
     if data is None:
         raise ValueError("无法从 predict 的输出中获取字典数据，请打印 output 检查具体结构")
 
-    # 常见结构 1： data['res']['pred'][0]
     try:
         if 'res' in data and isinstance(data['res'], dict) and 'pred' in data['res']:
             return _to_hxw_pred_array(data['res']['pred'][0])
     except Exception:
         pass
 
-    # 常见结构 2： data['result']['label_map'] 或 ['pred'] 或 ['seg_map']
     if 'result' in data and isinstance(data['result'], dict):
-        cand_keys = ['label_map', 'pred', 'seg_map']
-        for k in cand_keys:
+        for k in ['label_map', 'pred', 'seg_map']:
             if k in data['result']:
-                try:
-                    v = data['result'][k]
-                    # 有些会是 [HxW] 或 [[HxW]]
-                    if isinstance(v, list) and len(v) == 1:
-                        v = v[0]
-                    return _to_hxw_pred_array(v)
-                except Exception:
-                    continue
+                v = data['result'][k]
+                if isinstance(v, list) and len(v) == 1:
+                    v = v[0]
+                return _to_hxw_pred_array(v)
 
-    # 常见结构 3： 顶层就有 'pred'/'label_map'/'seg_map'
     for k in ['pred', 'label_map', 'seg_map']:
         if k in data:
             v = data[k]
@@ -468,36 +455,31 @@ def parse_pred_from_output(output):
                 v = v[0]
             return _to_hxw_pred_array(v)
 
-    # 若仍未解析成功，抛出并让用户打印 data
     raise KeyError(
         f"未能在 predict 返回中找到可用的类别图字段，可用键: {list(data.keys())}"
     )
 
 
 ############################
-# 7. 针对单张图片处理：推理 + 决策点 + 保存
+# 5. 单张图推理 + 决策点识别 + 保存
 ############################
 
-def process_single_image(model, img_path, save_dir):
-    """
-    对单张图片进行：
-    1) 读取 & 分割
-    2) 决策点识别
-    3) 若有决策点，则保存到 save_dir，文件名加上决策点类型
-    """
+def process_single_image(model, img_path, save_dir, predict_target_size=None):
     img = cv2.imread(img_path)
     if img is None:
         print(f"[WARN] 读取失败: {img_path}")
         return
 
-    # 按 PaddleX 文档，predict 入参通常支持图像路径或 ndarray，这里仍传路径
-    output = model.predict(input=img_path, target_size=-1)
+    # 如果未指定 predict_target_size，则不传该参数，沿用模型内设置
+    if predict_target_size is None:
+        output = model.predict(input=img_path)
+    else:
+        output = model.predict(input=img_path, target_size=predict_target_size)
 
     try:
         pred = parse_pred_from_output(output)
     except Exception as e:
         print("[ERROR] 解析预测结果失败: ", repr(e))
-        # 尝试打印一次结构帮助定位
         try:
             preview = None
             try:
@@ -517,7 +499,6 @@ def process_single_image(model, img_path, save_dir):
         print(f"[ERROR] 预测结果 pred 不是 HxW 的 np.ndarray，请检查 model.predict 的返回格式.")
         return
 
-    # ---------- 2. 获取地面 mask ----------
     ground_mask = simple_refine_ground_mask(
         get_ground_mask(pred),
         kernel_rel=0.008,
@@ -526,25 +507,20 @@ def process_single_image(model, img_path, save_dir):
         hole_max_area_ratio=HOLE_MAX_AREA_RATIO
     )
 
-    # 针对事件检测：抑制 ROI 内很小且很窄的“非地面”斑块（如树叶）
     ground_mask_evt = suppress_small_roi_obstacles(
         ground_mask,
         obs_min_area_ratio=OBS_MIN_AREA_RATIO,
         obs_min_width_ratio=OBS_MIN_WIDTH_RATIO
     )
 
-    # ---------- 3. 检测决策点 ----------
     events = detect_outdoor_events(ground_mask_evt)
 
     if not events:
-        # 没有任何决策点，就不保存（根据你需求可改为仍然保存）
         print(f"[INFO] {os.path.basename(img_path)} 未识别到决策点，跳过保存")
         return
 
-    # ---------- 4. 叠加可视化（可选） ----------
     vis = overlay_ground_mask(img, ground_mask_evt)
 
-    # 也可以在图像上写上事件文字方便调试
     y0 = 30
     for event in events:
         tag = event_to_tag(event)
@@ -553,48 +529,81 @@ def process_single_image(model, img_path, save_dir):
                     lineType=cv2.LINE_AA)
         y0 += 40
 
-    # ---------- 5. 拼接输出文件名 ----------
     base_name = os.path.basename(img_path)
     name, ext = os.path.splitext(base_name)
-
-    # 可能出现多个事件类型，将它们的 tag 用 '_' 连接起来
     tags = [event_to_tag(e) for e in events]
-    tags_str = "_".join(sorted(set(tags)))  # 去重并排序一下，避免重复
+    tags_str = "_".join(sorted(set(tags)))
 
     out_name = f"{name}_{tags_str}{ext}"
     os.makedirs(save_dir, exist_ok=True)
     out_path = os.path.join(save_dir, out_name)
 
-    # ---------- 6. 保存结果图 ----------
     cv2.imwrite(out_path, vis)
     print(f"[SAVE] {out_path}")
 
 
+############################
+# 6. CLI
+############################
 
 def main():
-    parser = argparse.ArgumentParser(description="使用 PaddleX 本地导出模型进行语义分割并输出带事件标注的可视化结果")
-    parser.add_argument(
-        "--model",
-        type=str,
-        default="inference_model/OCRNet_HRNet-W48_infer",
-        help="本地导出模型目录或配置文件(deploy.yaml/pipeline.yaml/inference.yml 等)"
-    )
-    parser.add_argument(
-        "--data_dir",
-        type=str,
-        default=DATA_DIR,
-        help="输入图片目录"
-    )
-    parser.add_argument(
-        "--out_dir",
-        type=str,
-        default=RES_DIR,
-        help="输出结果目录"
-    )
+    parser = argparse.ArgumentParser(description="使用 PaddleX 模型/管线进行语义分割并输出带事件标注的可视化结果")
+
+    # 运行模式
+    parser.add_argument("--mode", choices=["pipeline", "model"], default="pipeline", help="加载方式：pipeline(本地配置) 或 model(create_model)")
+
+    # pipeline 模式参数
+    parser.add_argument("--config", type=str, default="inference_model/OCRNet_HRNet-W48_infer", help="本地导出模型目录或配置文件(deploy.yaml/pipeline.yaml/inference.yml 等)")
+
+    # model 模式参数
+    parser.add_argument("--model_name", type=str, default=None, help="模型名称（如 PP-LiteSeg-T 等）。model 模式必填")
+    parser.add_argument("--model_dir", type=str, default=None, help="自定义权重/模型的本地目录，可选。若不填则使用内置权重")
+
+    # 通用推理设备与尺寸
+    parser.add_argument("--device", type=str, default=None, help="推理设备，例如 gpu:0 / cpu / npu:0。pipeline 模式未填则使用配置文件内设置")
+    parser.add_argument("--target_size", type=str, default=None, help="推理分辨率。示例：-1 或 512 或 512,512")
+
+    # 高性能推理插件（仅 model 模式有效）
+    parser.add_argument("--use_hpip", action="store_true", help="是否启用高性能推理插件(仅 model 模式)")
+    parser.add_argument("--hpi_config", type=str, default=None, help="高性能推理配置(JSON 字符串或 JSON 文件路径，仅 model 模式)")
+
+    # 数据与输出
+    parser.add_argument("--data_dir", type=str, default=DATA_DIR, help="输入图片目录")
+    parser.add_argument("--out_dir", type=str, default=RES_DIR, help="输出结果目录")
+
     args = parser.parse_args()
 
-    # 使用你下载/导出的本地模型（严格按照文档通过 config 创建管线）
-    model = load_seg_pipeline_local(args.model)
+    # 解析 target_size
+    ts = _parse_target_size(args.target_size)
+
+    # 解析 hpi_config
+    hpi_cfg = None
+    if args.hpi_config:
+        if os.path.isfile(args.hpi_config):
+            with open(args.hpi_config, "r", encoding="utf-8") as f:
+                hpi_cfg = json.load(f)
+        else:
+            try:
+                hpi_cfg = json.loads(args.hpi_config)
+            except Exception:
+                print("[WARN] hpi_config 既不是文件也不是合法 JSON 字符串，已忽略。")
+                hpi_cfg = None
+
+    # 构建模型/管线
+    if args.mode == "model":
+        if not args.model_name:
+            raise ValueError("model 模式下必须指定 --model_name")
+        model = load_seg_model_api(
+            model_name=args.model_name,
+            model_dir=args.model_dir,
+            device=(args.device or "gpu:0"),
+            target_size=ts,
+            use_hpip=args.use_hpip,
+            hpi_config=hpi_cfg,
+        )
+    else:
+        # pipeline 模式：从本地配置创建，允许 --device 覆盖
+        model = load_seg_pipeline_local(args.config, device=args.device)
 
     os.makedirs(args.out_dir, exist_ok=True)
 
@@ -603,14 +612,11 @@ def main():
         fpath = os.path.join(args.data_dir, fname)
         if not os.path.isfile(fpath):
             continue
-
-        # 简单筛选一下常见图片后缀
         ext = os.path.splitext(fname)[1].lower()
         if ext not in [".jpg", ".jpeg", ".png", ".bmp"]:
             continue
-
         print(f"[PROCESS] {fpath}")
-        process_single_image(model, fpath, args.out_dir)
+        process_single_image(model, fpath, args.out_dir, predict_target_size=ts)
 
 
 if __name__ == "__main__":
