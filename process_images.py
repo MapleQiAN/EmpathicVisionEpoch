@@ -4,6 +4,7 @@ import numpy as np
 import time
 from collections import deque
 from paddlex import create_pipeline
+import argparse
 
 ############################
 # 1. 参数与配置
@@ -28,49 +29,70 @@ RES_DIR = "res"     # 输出结果目录
 
 
 ############################
-# 2. PaddleX 模型加载
+# 2. PaddleX 模型加载（优先使用配置文件）
 ############################
 
-def load_seg_model(model_dir):
+def load_seg_model(model_path):
     """
-    加载 PaddleX 导出的语义分割推理模型.
-    model_dir: 推理模型目录，例如 'inference_model/OCRNet_HRNet-W48_infer'
-
-    兼容不同 PaddleX 版本的入参：优先尝试 model，其次 model_dir，最后使用配置文件 config。
-    支持自动在 model_dir 下寻找常见的推理配置文件名。
+    推荐传入：
+    - 配置文件: .../deploy.yaml 或 .../inference.yml
+    - 或者模型目录(要求目录里含 deploy.yaml/inference.yml)
     """
-    # 优先尝试直接传目录
-    try:
-        return create_pipeline(pipeline="semantic_segmentation", model=model_dir)
-    except TypeError:
-        pass
-    try:
-        return create_pipeline(pipeline="semantic_segmentation", model_dir=model_dir)
-    except TypeError:
-        pass
+    # 如果直接给的是配置文件
+    if os.path.isfile(model_path):
+        try:
+            return create_pipeline(pipeline="semantic_segmentation", config=model_path)
+        except TypeError:
+            # 部分版本参数名不同
+            return create_pipeline(pipeline="semantic_segmentation", pipeline_config=model_path)
 
-    # 使用配置文件路径
+    # 给的是目录，先找配置文件
     possible_cfgs = [
-        os.path.join(model_dir, "inference.yml"),
-        os.path.join(model_dir, "deploy.yaml"),
-        os.path.join(model_dir, "pipeline.yaml"),
-        os.path.join(model_dir, "infer_cfg.yml"),
-        os.path.join(model_dir, "inference.json"),  # 个别版本也支持 json
+        os.path.join(model_path, "deploy.yaml"),
+        os.path.join(model_path, "inference.yml"),
+        os.path.join(model_path, "pipeline.yaml"),
+        os.path.join(model_path, "infer_cfg.yml"),
+        os.path.join(model_path, "inference.json"),
     ]
     for cfg in possible_cfgs:
         if os.path.exists(cfg):
             try:
                 return create_pipeline(pipeline="semantic_segmentation", config=cfg)
             except TypeError:
-                # 有的版本参数名可能叫 pipeline_config
-                try:
-                    return create_pipeline(pipeline="semantic_segmentation", pipeline_config=cfg)
-                except TypeError:
-                    continue
+                return create_pipeline(pipeline="semantic_segmentation", pipeline_config=cfg)
+
+    # 如果目录里没有配置文件，再尝试 model_dir / model（少数版本可用）
+    try:
+        return create_pipeline(pipeline="semantic_segmentation", model_dir=model_path)
+    except TypeError:
+        pass
+    try:
+        return create_pipeline(pipeline="semantic_segmentation", model=model_path)
+    except TypeError:
+        pass
 
     raise RuntimeError(
-        f"无法加载 PaddleX 语义分割模型，请检查你的 PaddleX 版本与导出目录是否完整: {model_dir}"
+        f"未找到有效的推理配置文件，也无法用 model_dir/model 参数加载: {model_path}"
     )
+
+
+def debug_pipeline_info(p):
+    """打印管线关键信息，确认是否加载了本地模型。"""
+    try:
+        print(f"[DEBUG] pipeline class: {p.__class__}")
+    except Exception:
+        pass
+    keys = [
+        "config", "pipeline_config", "deploy_config", "cfg",
+        "model", "models", "_model", "_models"
+    ]
+    for k in keys:
+        if hasattr(p, k):
+            try:
+                v = getattr(p, k)
+                print(f"[DEBUG] pipeline.{k} -> {type(v)}: {v}")
+            except Exception:
+                print(f"[DEBUG] pipeline.{k} 存在但不可打印")
 
 
 def get_ground_mask(pred):
@@ -478,9 +500,34 @@ def process_single_image(model, img_path, save_dir):
 
 
 def main():
-    # 使用你本地的推理模型目录（用户提供）
-    model_dir = "inference_model/OCRNet_HRNet-W48_infer"  # 可改为绝对路径
-    model = load_seg_model(model_dir)
+    parser = argparse.ArgumentParser(description="图片批量分割与事件识别（PaddleX）")
+    parser.add_argument("--config", type=str, default=None, help="PaddleX 推理配置文件路径 (deploy.yaml / inference.yml)")
+    parser.add_argument("--model_dir", type=str, default=None, help="推理模型目录（包含 deploy.yaml/inference.yml）")
+    parser.add_argument("--data_dir", type=str, default=DATA_DIR, help="输入图片目录")
+    parser.add_argument("--res_dir", type=str, default=RES_DIR, help="输出结果目录")
+    args = parser.parse_args()
+
+    # 解析模型加载路径
+    if args.config:
+        path_to_use = args.config
+        print(f"[INFO] 使用配置文件加载: {path_to_use}")
+    elif args.model_dir:
+        path_to_use = args.model_dir
+        print(f"[INFO] 使用模型目录加载: {path_to_use}")
+    else:
+        # 兼容原来的默认相对路径
+        path_to_use = "inference_model/OCRNet_HRNet-W48_infer"
+        print(f"[INFO] 未指定 --config/--model_dir，尝试默认: {path_to_use}")
+
+    model = load_seg_model(path_to_use)
+
+    # 打印管线信息确认加载了哪个模型
+    debug_pipeline_info(model)
+
+    # 覆盖全局目录，保持后续逻辑不变
+    global DATA_DIR, RES_DIR
+    DATA_DIR = args.data_dir
+    RES_DIR = args.res_dir
 
     os.makedirs(RES_DIR, exist_ok=True)
 
