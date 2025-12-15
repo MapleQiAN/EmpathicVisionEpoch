@@ -2,6 +2,7 @@ import os
 import cv2
 import numpy as np
 import argparse
+import json
 from paddlex import create_pipeline
 
 ############################
@@ -56,6 +57,73 @@ def _find_seg_config(path: str) -> str:
     )
 
 
+def _load_config_to_dict(cfg_path: str) -> dict:
+    """
+    将配置文件内容加载为 dict。
+    - 支持 .yaml/.yml（需安装 pyyaml）、.json
+    - 若为不支持后缀或解析失败则抛错
+    """
+    ext = os.path.splitext(cfg_path)[1].lower()
+    if ext in [".yaml", ".yml"]:
+        try:
+            import yaml  # 延迟导入，避免环境无 pyyaml 时影响其它逻辑
+        except ImportError as e:
+            raise ImportError(
+                "解析 YAML 失败：未安装 pyyaml，请先安装：pip install pyyaml"
+            ) from e
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+        if not isinstance(cfg, dict):
+            raise ValueError(f"YAML 配置解析后不是字典类型: {type(cfg)}")
+        return cfg
+    elif ext == ".json":
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        if not isinstance(cfg, dict):
+            raise ValueError(f"JSON 配置解析后不是字典类型: {type(cfg)}")
+        return cfg
+    else:
+        # 部分版本也可能是其它命名，但通常内容仍为 yaml，尝试 yaml 解析作为兜底
+        try:
+            import yaml
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f)
+            if not isinstance(cfg, dict):
+                raise ValueError
+            return cfg
+        except Exception as e:
+            raise ValueError(
+                f"无法解析配置文件（仅支持 YAML/JSON）: {cfg_path}\n"
+                f"请改用 deploy.yaml/pipeline.yaml/inference.yml/infer_cfg.yml 或 inference.json"
+            ) from e
+
+
+def _make_paths_absolute(obj, base_dir: str):
+    """
+    递归地将配置 dict/list 中的相对路径转成绝对路径：
+    - 跳过以 http(s):// 开头的 URL
+    - 仅当 join(base_dir, value) 存在时才替换
+    """
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            obj[k] = _make_paths_absolute(v, base_dir)
+        return obj
+    elif isinstance(obj, list):
+        return [_make_paths_absolute(v, base_dir) for v in obj]
+    elif isinstance(obj, str):
+        v = obj
+        if v.startswith("http://") or v.startswith("https://"):
+            return v
+        if os.path.isabs(v):
+            return v
+        cand = os.path.normpath(os.path.join(base_dir, v))
+        if os.path.exists(cand):
+            return cand
+        return v
+    else:
+        return obj
+
+
 def load_seg_pipeline_local(model_path: str):
     """
     按 PaddleX 文档推荐：通过本地导出的 config 文件来创建语义分割管线，
@@ -65,12 +133,42 @@ def load_seg_pipeline_local(model_path: str):
     """
     cfg_path = _find_seg_config(model_path)
 
-    # 仅使用 config 来创建，避免任何可能触发“内置/默认模型”的分支
-    # 文档用法：create_pipeline(pipeline="semantic_segmentation", config=cfg_path)
-    pipeline = create_pipeline(pipeline="semantic_segmentation", config=cfg_path)
-    # 打印一次，帮助用户确认使用的是本地模型
-    print(f"[INFO] 已使用本地配置创建分割管线: {cfg_path}")
-    return pipeline
+    # 读取配置为 dict，按你当前 PaddleX 版本的 create_pipeline 期望传入 dict
+    config_dict = _load_config_to_dict(cfg_path)
+    if not isinstance(config_dict, dict):
+        raise TypeError("配置对象不是字典，无法用于 create_pipeline(config=...)")
+
+    # 尝试将其中的相对路径改为绝对路径（相对 cfg 所在目录）
+    base_dir = os.path.dirname(os.path.abspath(cfg_path))
+    config_dict = _make_paths_absolute(config_dict, base_dir)
+
+    # 如果导出配置里未包含 pipeline_name，补充默认值避免内部取键报错
+    if "pipeline_name" not in config_dict:
+        config_dict["pipeline_name"] = "semantic_segmentation"
+
+    # 先尝试新版 API：仅传 config=dict
+    try:
+        pipeline = create_pipeline(config=config_dict)
+        print(f"[INFO] 已使用本地配置创建分割管线: {cfg_path}")
+        return pipeline
+    except Exception as e1:
+        # 兼容某些版本：需要显式传 pipeline 名称（同时传 dict）
+        try:
+            pipeline = create_pipeline(pipeline="semantic_segmentation", config=config_dict)
+            print(f"[INFO] 已使用本地配置创建分割管线(兼容模式1): {cfg_path}")
+            return pipeline
+        except Exception as e2:
+            # 极少数版本参数名不同（pipeline_config）
+            try:
+                pipeline = create_pipeline(pipeline="semantic_segmentation", pipeline_config=config_dict)
+                print(f"[INFO] 已使用本地配置创建分割管线(兼容模式2): {cfg_path}")
+                return pipeline
+            except Exception as e3:
+                raise RuntimeError(
+                    "创建 PaddleX 语义分割管线失败，请检查 PaddleX 版本与导出配置是否匹配。\n"
+                    f"cfg: {cfg_path}\n"
+                    f"错误链: {repr(e1)} -> {repr(e2)} -> {repr(e3)}"
+                )
 
 
 def get_ground_mask(pred):
