@@ -1,10 +1,8 @@
 import os
 import cv2
 import numpy as np
-import time
-from collections import deque
-from paddlex import create_pipeline
 import argparse
+from paddlex import create_pipeline
 
 ############################
 # 1. 参数与配置
@@ -29,70 +27,50 @@ RES_DIR = "res"     # 输出结果目录
 
 
 ############################
-# 2. PaddleX 模型加载（优先使用配置文件）
+# 2. 使用本地导出模型创建 PaddleX 语义分割管线（按官方文档方式）
 ############################
 
-def load_seg_model(model_path):
+def _find_seg_config(path: str) -> str:
     """
-    推荐传入：
-    - 配置文件: .../deploy.yaml 或 .../inference.yml
-    - 或者模型目录(要求目录里含 deploy.yaml/inference.yml)
+    寻找导出目录中的管线配置文件（PaddleX 文档推荐用 config 方式创建管线）：
+    - deploy.yaml / pipeline.yaml / inference.yml / infer_cfg.yml / inference.json
+    若传入的 path 本身就是一个文件，则直接返回。
+    否则在目录下按以上优先级搜索，找到则返回其完整路径，否则抛错。
     """
-    # 如果直接给的是配置文件
-    if os.path.isfile(model_path):
-        try:
-            return create_pipeline(pipeline="semantic_segmentation", config=model_path)
-        except TypeError:
-            # 部分版本参数名不同
-            return create_pipeline(pipeline="semantic_segmentation", pipeline_config=model_path)
+    if os.path.isfile(path):
+        return path
 
-    # 给的是目录，先找配置文件
-    possible_cfgs = [
-        os.path.join(model_path, "deploy.yaml"),
-        os.path.join(model_path, "inference.yml"),
-        os.path.join(model_path, "pipeline.yaml"),
-        os.path.join(model_path, "infer_cfg.yml"),
-        os.path.join(model_path, "inference.json"),
+    candidates = [
+        os.path.join(path, "deploy.yaml"),
+        os.path.join(path, "pipeline.yaml"),
+        os.path.join(path, "inference.yml"),
+        os.path.join(path, "infer_cfg.yml"),
+        os.path.join(path, "inference.json"),
     ]
-    for cfg in possible_cfgs:
+    for cfg in candidates:
         if os.path.exists(cfg):
-            try:
-                return create_pipeline(pipeline="semantic_segmentation", config=cfg)
-            except TypeError:
-                return create_pipeline(pipeline="semantic_segmentation", pipeline_config=cfg)
-
-    # 如果目录里没有配置文件，再尝试 model_dir / model（少数版本可用）
-    try:
-        return create_pipeline(pipeline="semantic_segmentation", model_dir=model_path)
-    except TypeError:
-        pass
-    try:
-        return create_pipeline(pipeline="semantic_segmentation", model=model_path)
-    except TypeError:
-        pass
-
-    raise RuntimeError(
-        f"未找到有效的推理配置文件，也无法用 model_dir/model 参数加载: {model_path}"
+            return cfg
+    raise FileNotFoundError(
+        f"未找到可用的管线配置文件，请检查导出目录是否完整: {path}\n"
+        f"期望存在的文件之一: deploy.yaml / pipeline.yaml / inference.yml / infer_cfg.yml / inference.json"
     )
 
 
-def debug_pipeline_info(p):
-    """打印管线关键信息，确认是否加载了本地模型。"""
-    try:
-        print(f"[DEBUG] pipeline class: {p.__class__}")
-    except Exception:
-        pass
-    keys = [
-        "config", "pipeline_config", "deploy_config", "cfg",
-        "model", "models", "_model", "_models"
-    ]
-    for k in keys:
-        if hasattr(p, k):
-            try:
-                v = getattr(p, k)
-                print(f"[DEBUG] pipeline.{k} -> {type(v)}: {v}")
-            except Exception:
-                print(f"[DEBUG] pipeline.{k} 存在但不可打印")
+def load_seg_pipeline_local(model_path: str):
+    """
+    按 PaddleX 文档推荐：通过本地导出的 config 文件来创建语义分割管线，
+    确保不会使用 PaddleX 内置/在线模型。
+
+    参考文档: https://paddlepaddle.github.io/PaddleX/latest/module_usage/tutorials/cv_modules/semantic_segmentation.html
+    """
+    cfg_path = _find_seg_config(model_path)
+
+    # 仅使用 config 来创建，避免任何可能触发“内置/默认模型”的分支
+    # 文档用法：create_pipeline(pipeline="semantic_segmentation", config=cfg_path)
+    pipeline = create_pipeline(pipeline="semantic_segmentation", config=cfg_path)
+    # 打印一次，帮助用户确认使用的是本地模型
+    print(f"[INFO] 已使用本地配置创建分割管线: {cfg_path}")
+    return pipeline
 
 
 def get_ground_mask(pred):
@@ -242,9 +220,6 @@ def detect_outdoor_events(ground_mask,
     gl = ratio(left)
     gc = ratio(center)
     gr = ratio(right)
-
-    # 可选：调参阶段可打印
-    # print(f"gl={gl:.2f}, gc={gc:.2f}, gr={gr:.2f}")
 
     straight = gc > th_ground
 
@@ -417,6 +392,7 @@ def process_single_image(model, img_path, save_dir):
         print(f"[WARN] 读取失败: {img_path}")
         return
 
+    # 按 PaddleX 文档，predict 入参通常支持图像路径或 ndarray，这里仍传路径
     output = model.predict(input=img_path, target_size=-1)
 
     try:
@@ -425,10 +401,8 @@ def process_single_image(model, img_path, save_dir):
         print("[ERROR] 解析预测结果失败: ", repr(e))
         # 尝试打印一次结构帮助定位
         try:
-            # 尽量安全地探查一下返回结构
             preview = None
             try:
-                # 取一个元素看看
                 for res in output:
                     if hasattr(res, 'json'):
                         preview = list(res.json.keys()) if isinstance(res.json, dict) else type(res.json)
@@ -500,40 +474,35 @@ def process_single_image(model, img_path, save_dir):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="图片批量分割与事件识别（PaddleX）")
-    parser.add_argument("--config", type=str, default=None, help="PaddleX 推理配置文件路径 (deploy.yaml / inference.yml)")
-    parser.add_argument("--model_dir", type=str, default=None, help="推理模型目录（包含 deploy.yaml/inference.yml）")
-    parser.add_argument("--data_dir", type=str, default=DATA_DIR, help="输入图片目录")
-    parser.add_argument("--res_dir", type=str, default=RES_DIR, help="输出结果目录")
+    parser = argparse.ArgumentParser(description="使用 PaddleX 本地导出模型进行语义分割并输出带事件标注的可视化结果")
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="inference_model/OCRNet_HRNet-W48_infer",
+        help="本地导出模型目录或配置文件(deploy.yaml/pipeline.yaml/inference.yml 等)"
+    )
+    parser.add_argument(
+        "--data_dir",
+        type=str,
+        default=DATA_DIR,
+        help="输入图片目录"
+    )
+    parser.add_argument(
+        "--out_dir",
+        type=str,
+        default=RES_DIR,
+        help="输出结果目录"
+    )
     args = parser.parse_args()
 
-    # 解析模型加载路径
-    if args.config:
-        path_to_use = args.config
-        print(f"[INFO] 使用配置文件加载: {path_to_use}")
-    elif args.model_dir:
-        path_to_use = args.model_dir
-        print(f"[INFO] 使用模型目录加载: {path_to_use}")
-    else:
-        # 兼容原来的默认相对路径
-        path_to_use = "inference_model/OCRNet_HRNet-W48_infer"
-        print(f"[INFO] 未指定 --config/--model_dir，尝试默认: {path_to_use}")
+    # 使用你下载/导出的本地模型（严格按照文档通过 config 创建管线）
+    model = load_seg_pipeline_local(args.model)
 
-    model = load_seg_model(path_to_use)
+    os.makedirs(args.out_dir, exist_ok=True)
 
-    # 打印管线信息确认加载了哪个模型
-    debug_pipeline_info(model)
-
-    # 覆盖全局目录，保持后续逻辑不变
-    global DATA_DIR, RES_DIR
-    DATA_DIR = args.data_dir
-    RES_DIR = args.res_dir
-
-    os.makedirs(RES_DIR, exist_ok=True)
-
-    # 遍历 data 目录下的所有图片文件
-    for fname in os.listdir(DATA_DIR):
-        fpath = os.path.join(DATA_DIR, fname)
+    # 遍历目录下的所有图片文件
+    for fname in os.listdir(args.data_dir):
+        fpath = os.path.join(args.data_dir, fname)
         if not os.path.isfile(fpath):
             continue
 
@@ -543,7 +512,7 @@ def main():
             continue
 
         print(f"[PROCESS] {fpath}")
-        process_single_image(model, fpath, RES_DIR)
+        process_single_image(model, fpath, args.out_dir)
 
 
 if __name__ == "__main__":
