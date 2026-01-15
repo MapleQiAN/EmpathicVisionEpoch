@@ -1,9 +1,3 @@
-# 数据和结果目录
-data/
-res/
-inference_model/
-data25.11.26
-
 # Python
 __pycache__/
 *.py[cod]
@@ -22,59 +16,83 @@ parts/
 sdist/
 var/
 wheels/
-pip-wheel-metadata/
-share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-MANIFEST
 
-# 虚拟环境
+# Virtual environments
 venv/
 ENV/
 env/
 .venv
 
-# IDE
-.vscode/
+# PyCharm / IntelliJ
 .idea/
-*.swp
-*.swo
-*~
-.DS_Store
-*.sublime-project
-*.sublime-workspace
+*.iml
+*.iws
+*.ipr
+out/
+
+# VS Code
+.vscode/
+*.code-workspace
 
 # Jupyter Notebook
 .ipynb_checkpoints
 *.ipynb
 
-# 日志文件
+# Data and models (usually large files)
+data/
+models/
+*.pth
+*.pt
+*.ckpt
+*.bin
+*.onnx
+*.safetensors
+
+# Logs
 *.log
 logs/
 
-# 临时文件
-*.tmp
-*.temp
-*.bak
-*.backup
-
-# 操作系统
+# OS
 .DS_Store
 Thumbs.db
-.directory
+*.swp
+*.swo
+*~
 
-# 模型和大文件
-*.pth
-*.pb
-*.onnx
-*.h5
-*.model
-*.weights
+# Environment variables
+.env
+.env.local
+.env.*.local
 
-# 输出文件
-*.csv
-*.json
-output/
-res/
+# Docker
+docker/.env
 
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Large media files
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.tiff
+*.mp4
+*.avi
+*.mov
