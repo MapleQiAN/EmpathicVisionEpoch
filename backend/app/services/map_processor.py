@@ -268,7 +268,15 @@ class MapDigitizer:
         
         try:
             # PaddleOCR返回格式: [[[x1,y1], [x2,y2], [x3,y3], [x4,y4]], (text, confidence)]
-            results = self.ocr.ocr(image, cls=True)
+            # 不同版本对 cls 参数支持不一致：优先尝试 cls=True，不支持则回退
+            try:
+                results = self.ocr.ocr(image, cls=True)
+            except TypeError as e:
+                msg = str(e)
+                if "unexpected keyword argument" in msg and "cls" in msg:
+                    results = self.ocr.ocr(image)
+                else:
+                    raise
             
             ocr_results = []
             if results and results[0]:
