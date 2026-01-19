@@ -240,15 +240,26 @@ class MapDigitizer:
             raise RuntimeError("OCR 未初始化，但系统要求必须使用 OCR")
         
         try:
-            # PaddleOCR返回格式: [[[x1,y1], [x2,y2], [x3,y3], [x4,y4]], (text, confidence)]
-            results = self.ocr.ocr(image, cls=True)
+            # PaddleOCR 各版本接口差异较大：
+            # - 老版本: ocr(img, cls=True/False)
+            # - 新版本: ocr(img) 内部走 predict()，不再接受 cls 参数
+            try:
+                results = self.ocr.ocr(image)
+            except TypeError:
+                # 兼容旧版本签名
+                results = self.ocr.ocr(image, cls=True)
             
             ocr_results = []
-            if results and results[0]:
-                for line in results[0]:
-                    if line:
-                        bbox, (text, confidence) = line
-                        ocr_results.append(OCRResult(text, bbox, confidence))
+            # 兼容常见返回结构：
+            # 1) results = [ [ [bbox, (text, conf)], ... ] ]  （老版本常见）
+            # 2) results = [ [bbox, (text, conf)], ... ]      （部分版本直接返回单层）
+            if results:
+                lines = results[0] if isinstance(results, list) and len(results) == 1 and isinstance(results[0], list) else results
+                for line in lines or []:
+                    if not line:
+                        continue
+                    bbox, (text, confidence) = line
+                    ocr_results.append(OCRResult(text, bbox, float(confidence)))
             
             print(f"[INFO] OCR提取到 {len(ocr_results)} 个文本")
             return ocr_results
