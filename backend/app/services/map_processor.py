@@ -11,7 +11,7 @@ import numpy as np
 from skimage.morphology import remove_small_objects, skeletonize
 from skimage.measure import label, regionprops
 
-# PaddleOCR 是可选依赖：未安装时自动禁用 OCR 功能
+# PaddleOCR 是必选依赖：系统强制使用 OCR
 try:
     from paddleocr import PaddleOCR  # type: ignore
 except Exception:  # pragma: no cover
@@ -74,9 +74,9 @@ class MapDigitizer:
         self.adaptive_block_size = adaptive_block_size
         self.adaptive_c = adaptive_c
         self.morph_kernel_size = morph_kernel_size
-        self.use_ocr = use_ocr
-        self.force_ocr = force_ocr
-        self.ocr_lang = ocr_lang
+        # 系统强制使用 OCR：忽略外部传入的 use_ocr/force_ocr
+        self.use_ocr = True
+        self.force_ocr = True
         self.ocr_node_distance_threshold = ocr_node_distance_threshold
         self.corner_angle_tolerance = corner_angle_tolerance
         self.debug_dir = debug_dir
@@ -92,41 +92,15 @@ class MapDigitizer:
         self.corridor_min_slim_ratio = 0.25
         self.seed_dilate_iter = 3
         self.max_rotation_correction = 8.0  # degrees
-        if use_ocr:
-            try:
-                if PaddleOCR is None:
-                    raise ImportError("paddleocr is not installed")
-                # 初始化PaddleOCR，use_angle_cls=True启用方向分类器
-                # 部分版本 PaddleOCR 不支持 show_log，保持最小参数集
-                self.ocr = PaddleOCR(use_angle_cls=True, lang=ocr_lang)
-                print("[INFO] PaddleOCR initialized successfully")
-            except Exception as e:
-                if force_ocr:
-                    # 强制模式：直接失败，避免“前端已打开但后端静默禁用”的困惑
-                    raise RuntimeError(f"Failed to initialize PaddleOCR (force_ocr=true): {e}") from e
-                print(f"[WARN] Failed to initialize PaddleOCR: {e}, OCR features disabled")
-                self.use_ocr = False
-
-    def _ensure_ocr(self) -> None:
-        """确保 OCR 引擎已初始化。
-
-        - 非强制模式：初始化失败则禁用 OCR（返回空结果）。
-        - 强制模式：初始化失败直接抛错。
-        """
-        if not self.use_ocr:
-            return
-        if self.ocr is not None:
-            return
+        # OCR：必选依赖。不允许降级关闭。
         try:
             if PaddleOCR is None:
-                raise ImportError("paddleocr is not installed")
-            self.ocr = PaddleOCR(use_angle_cls=True, lang=self.ocr_lang)
-            print("[INFO] PaddleOCR initialized successfully (lazy)")
+                raise ImportError("paddleocr not available")
+            # PaddleOCR 参数在不同版本会变化；这里使用最小参数集以保证兼容性
+            self.ocr = PaddleOCR(use_angle_cls=True, lang=ocr_lang)
+            print("[INFO] PaddleOCR initialized successfully (OCR required)")
         except Exception as e:
-            if self.force_ocr:
-                raise RuntimeError(f"Failed to initialize PaddleOCR (lazy, force_ocr=true): {e}") from e
-            print(f"[WARN] Failed to initialize PaddleOCR (lazy): {e}, OCR features disabled")
-            self.use_ocr = False
+            raise RuntimeError("系统已强制启用OCR，但 PaddleOCR 初始化失败") from e
 
     # ---------------------------
     # 工具与调试辅助
@@ -261,22 +235,13 @@ class MapDigitizer:
         
         返回: OCRResult列表
         """
-        # 这里做一次懒初始化，避免“构造时失败/未初始化导致永远不跑OCR”
-        self._ensure_ocr()
-        if not self.use_ocr or self.ocr is None:
-            return []
+        # 系统强制 OCR：这里不允许静默返回空
+        if self.ocr is None:
+            raise RuntimeError("OCR 未初始化，但系统要求必须使用 OCR")
         
         try:
             # PaddleOCR返回格式: [[[x1,y1], [x2,y2], [x3,y3], [x4,y4]], (text, confidence)]
-            # 不同版本对 cls 参数支持不一致：优先尝试 cls=True，不支持则回退
-            try:
-                results = self.ocr.ocr(image, cls=True)
-            except TypeError as e:
-                msg = str(e)
-                if "unexpected keyword argument" in msg and "cls" in msg:
-                    results = self.ocr.ocr(image)
-                else:
-                    raise
+            results = self.ocr.ocr(image, cls=True)
             
             ocr_results = []
             if results and results[0]:
@@ -288,10 +253,7 @@ class MapDigitizer:
             print(f"[INFO] OCR提取到 {len(ocr_results)} 个文本")
             return ocr_results
         except Exception as e:
-            if self.force_ocr:
-                raise RuntimeError(f"OCR processing failed (force_ocr=true): {e}") from e
-            print(f"[ERROR] OCR处理失败: {e}")
-            return []
+            raise RuntimeError(f"OCR处理失败: {e}") from e
 
     def process_fire_map(
         self, 
@@ -339,8 +301,8 @@ class MapDigitizer:
         evacuation_routes: List[Dict[str, any]] = []
         seed_mask, seed_meta = self._extract_corridor_seed(image, palettes)
 
-        # Step 2: OCR（增强小字、纠错）
-        ocr_results = []
+        # Step 2: OCR（增强小字、纠错）——可选
+        ocr_results: List[OCRResult] = []
         if extract_ocr and self.use_ocr:
             ocr_input = self._prepare_ocr_image(glare_clean)
             ocr_results = self.extract_text_with_ocr(ocr_input)
@@ -351,7 +313,7 @@ class MapDigitizer:
                     "center_x": r.center_x,
                     "center_y": r.center_y,
                     "bbox": r.bbox,
-                    "confidence": float(r.confidence)
+                    "confidence": float(r.confidence),
                 }
                 for r in ocr_results
             ]
@@ -393,8 +355,7 @@ class MapDigitizer:
         corridor_skel_for_graph = self._prune_skeleton_spurs(skeleton.astype(np.uint8), max_len=18)
         graph, nodes = self._skeleton_to_graph(corridor_skel_for_graph > 0)
         nodes = self._classify_nodes(graph, nodes)
-        if ocr_results:
-            nodes = self._link_ocr_to_nodes(nodes, ocr_results, graph)
+        # 用户需求：门牌号/文字不应被标成点，因此不将 OCR 结果绑定到 nodes（避免生成 FACILITY 点）
 
         edges: List[Dict[str, int | float]] = []
         for source, target, data in graph.edges(data=True):
@@ -408,10 +369,9 @@ class MapDigitizer:
                 }
             )
 
-        # Step 7: 房间/设施绑定 + 门点推断
-        rooms = self._extract_rooms(free_space, corridor_area)
-        rooms = self._bind_rooms_with_text(rooms, ocr_results, centerlines)
-        facilities = self._detect_facilities(screw_clean, ocr_results, templates, palettes)
+        # Step 7: 按需求只标注走廊，房间/设施等上层语义暂不输出（避免额外点线干扰）
+        rooms: List[Dict[str, any]] = []
+        facilities: List[Dict[str, any]] = []
 
         result = {
             "nodes": nodes,

@@ -16,7 +16,7 @@ async def process_fire_map(
     file: UploadFile = File(...),
     apply_perspective: bool = True,
     extract_ocr: bool = True,
-    force_ocr: bool = True,
+    force_ocr: bool = False,
     building_id: str = "default",
     floor_id: str = "default",
     auto_create_nodes: bool = False,
@@ -26,8 +26,8 @@ async def process_fire_map(
     参数:
     - file: 消防图图片文件
     - apply_perspective: 是否应用透视变换
-    - extract_ocr: 是否提取OCR文本
-    - force_ocr: 是否强制 OCR（失败直接报错，不静默禁用）
+    - extract_ocr: 是否提取OCR文本（系统已强制开启；传 False 会报错）
+    - force_ocr: 是否强制 OCR（已强制开启；入参将被忽略）
     - building_id: 建筑物ID
     - floor_id: 楼层ID
     - auto_create_nodes: 是否自动创建图节点（将OCR结果关联到节点）
@@ -39,16 +39,20 @@ async def process_fire_map(
     # 保存临时文件
     temp_file = None
     try:
+        # 系统强制使用 OCR：不允许关闭
+        if extract_ocr is False:
+            raise HTTPException(status_code=400, detail="系统已强制启用OCR，extract_ocr 不允许为 false")
+
         with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp:
             shutil.copyfileobj(file.file, tmp)
             temp_file = tmp.name
         
         # 处理地图
-        digitizer = MapDigitizer(use_ocr=extract_ocr, force_ocr=force_ocr)
+        digitizer = MapDigitizer(use_ocr=True, force_ocr=True)
         result = digitizer.process_fire_map(
             temp_file,
             apply_perspective=apply_perspective,
-            extract_ocr=extract_ocr
+            extract_ocr=True
         )
         
         # 如果启用自动创建节点，将OCR结果关联到最近的节点

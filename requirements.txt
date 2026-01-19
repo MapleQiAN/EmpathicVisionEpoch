@@ -2,6 +2,7 @@ fastapi
 uvicorn
 python-multipart
 opencv-python
+paddlepaddle
 paddleocr
 networkx
 numpy
