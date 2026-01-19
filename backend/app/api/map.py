@@ -16,6 +16,7 @@ async def process_fire_map(
     file: UploadFile = File(...),
     apply_perspective: bool = True,
     extract_ocr: bool = True,
+    force_ocr: bool = True,
     building_id: str = "default",
     floor_id: str = "default",
     auto_create_nodes: bool = False,
@@ -26,6 +27,7 @@ async def process_fire_map(
     - file: 消防图图片文件
     - apply_perspective: 是否应用透视变换
     - extract_ocr: 是否提取OCR文本
+    - force_ocr: 是否强制 OCR（失败直接报错，不静默禁用）
     - building_id: 建筑物ID
     - floor_id: 楼层ID
     - auto_create_nodes: 是否自动创建图节点（将OCR结果关联到节点）
@@ -42,7 +44,7 @@ async def process_fire_map(
             temp_file = tmp.name
         
         # 处理地图
-        digitizer = MapDigitizer(use_ocr=extract_ocr)
+        digitizer = MapDigitizer(use_ocr=extract_ocr, force_ocr=force_ocr)
         result = digitizer.process_fire_map(
             temp_file,
             apply_perspective=apply_perspective,
