@@ -1,8 +1,32 @@
-# 项目说明：语义分割与户外通行辅助示例
+# EmpathicVisionEpoch - 室内视觉导航系统
 
-本项目包含两个脚本，基于 PaddleX 的语义分割能力：
-- demo.py：使用 PaddleX 预置的语义分割 pipeline 对单张图片进行预测，保存可视化结果与 JSON。
-- process_images.py：加载本地导出的 PaddleX 语义分割推理模型，遍历 data/ 下的图片，提取“可行走地面”并进行简单的通行事件检测（如转弯、十字、丁字、中央可绕行障碍），保存带可视化覆盖和事件标签的结果图到 res/。
+一个基于计算机视觉和图计算的室内导航系统，通过处理消防图和实时视觉流，为迷路用户提供导航指引。
+
+## 🎯 项目概述
+
+本项目分为四个开发阶段（Sprint）：
+
+- **Sprint 1: 骨架构建** ✅ - 从消防图提取拓扑结构（已完成）
+- **Sprint 2: 视觉指纹** 🚧 - 建立图片到地点的映射（进行中）
+- **Sprint 3: 融合与定位** 📋 - 视觉流定位到骨架图（计划中）
+- **Sprint 4: 导航交互** 📋 - Flutter前端应用（计划中）
+
+## ✨ 已完成功能
+
+### Sprint 1: 骨架构建 ✅
+
+- ✅ **透视变换**：自动检测消防图四个角并校正倾斜
+- ✅ **OCR文本提取**：使用PaddleOCR识别房间号、楼梯等标识
+- ✅ **骨架化算法**：将走廊线条提取为单像素骨架
+- ✅ **拓扑图构建**：生成节点（交叉点）和边（连接关系）
+- ✅ **OCR-节点关联**：自动将OCR文本关联到最近的图节点
+- ✅ **RESTful API**：`POST /map/process` 处理消防图上传
+
+### 其他功能
+
+- ✅ **语义分割**：基于PaddleX/PaddleSeg的户外场景语义分割
+- ✅ **事件检测**：识别转弯、十字路口、障碍物等通行事件
+- ✅ **图数据结构**：完整的节点、边、锚点、证据模型
 
 ## 目录
 
@@ -44,45 +68,48 @@ pip install paddlex opencv-python numpy
 
 > 提示：PaddleX 的具体版本与 API 可能存在差异。process_images.py 中已做了多版本兼容处理（model、model_dir、config、pipeline_config 等）。
 
-## 快速开始
+## 🚀 快速开始
 
-### 1) 单图演示（demo.py）
+### Sprint 1: 地图处理（推荐从这里开始）
 
-无需自备模型，直接运行：
+1. **安装依赖**
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-```
+2. **启动后端服务**
+   ```bash
+   cd backend
+   uvicorn app.main:app --reload
+   ```
+
+3. **测试地图处理API**
+   ```bash
+   # 方式1: 使用测试脚本
+   python scripts/test_map_processing.py demo.jpg
+   
+   # 方式2: 访问Swagger UI
+   # 浏览器打开 http://localhost:8000/docs
+   # 找到 POST /map/process 端点，上传图片测试
+   ```
+
+详细使用说明请查看：[docs/sprint1_guide.md](docs/sprint1_guide.md)
+
+### 语义分割功能（原有功能）
+
+#### 1) 单图演示（demo.py）
+
+```bash
 python demo.py
 ```
 
-脚本会：
-- 使用 `create_pipeline(pipeline="semantic_segmentation")` 创建分割 pipeline；
-- 对 demo.jpg 进行预测；
-- 将可视化结果与 JSON 保存到 `./output/` 目录下。
+#### 2) 批处理 + 事件检测（process_images.py）
 
-### 2) 批处理 + 事件检测（process_images.py）
+```bash
+python process_images.py --config <模型配置> --weights <模型权重>
+```
 
-1. 准备推理模型目录（PaddleX 导出）：
-   - 在脚本中默认路径为：
-     ```
-     model_dir = "inference_model/OCRNet_HRNet-W48_infer"
-     ```
-   - 请将其修改为你的实际推理模型目录。该目录通常包含（不同版本命名略有差异）：
-     - 模型文件：`model.pdmodel`、`model.pdiparams`（或同等物）
-     - 配置文件：`inference.yml`、`deploy.yaml`、`pipeline.yaml`、`infer_cfg.yml` 或 `inference.json` 之一
-
-2. 准备输入图片：
-   - 在项目根目录下创建 `data/` 文件夹，将待处理的 `.jpg/.jpeg/.png/.bmp` 图片放入其中。
-
-3. 运行脚本：
-   ```
-   python process_images.py
-   ```
-
-4. 查看结果：
-   - 输出会保存在 `res/` 下，文件名会在原图名基础上追加识别到的事件标签，例如：
-     - `street_001_TURN_LEFT.jpg`
-     - `park_017_T_JUNCTION_OBSTACLE_CENTER_BYPASSABLE.jpg`
-   - 图像中会以半透明绿色覆盖“可行走地面”，并在左上角写上事件类型。
+详细说明见下方"事件检测规则概览"部分。
 
 ## 事件检测规则概览
 
@@ -180,11 +207,33 @@ flowchart TD
 - 标签映射参考 Cityscapes 19 类（见 label.txt）。
 - 本仓库未包含第三方数据与模型，请按各自许可获取并使用。
 
+## 📚 文档
+
+- [Sprint 1 使用指南](docs/sprint1_guide.md) - 地图处理API详细说明
+- [下一步行动计划](docs/NEXT_STEPS.md) - Sprint 2-4 开发指南
+- [技术栈路线图](docs/tech_stack_roadmap.md) - 完整技术方案
+
+## 🛠️ 技术栈
+
+- **后端**: FastAPI, PaddleOCR, OpenCV, NetworkX
+- **前端**: Flutter (计划中)
+- **CV算法**: SuperPoint + SuperGlue (计划中)
+- **数据库**: PostgreSQL (计划中), Neo4j (计划中)
+- **存储**: MinIO (计划中)
+
+## 📝 开发状态
+
+- ✅ Sprint 1: 骨架构建（已完成）
+- 🚧 Sprint 2: 视觉指纹（进行中）
+- 📋 Sprint 3: 融合与定位（计划中）
+- 📋 Sprint 4: 导航交互（计划中）
+
 ## 致谢
 
 - [PaddleX](https://github.com/PaddlePaddle/PaddleX)
+- [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR)
 - Cityscapes 数据集标签定义
 
 ---
 
-如需进一步定制（如增加语音提示/路径规划/录像流输入），欢迎提出需求。
+**下一步：查看 [docs/NEXT_STEPS.md](docs/NEXT_STEPS.md) 了解如何继续开发！** 🚀

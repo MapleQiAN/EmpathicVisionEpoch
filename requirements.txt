@@ -6,3 +6,5 @@ paddleocr
 networkx
 numpy
 scikit-image
+pydantic
+pillow
