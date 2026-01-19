@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>消防图处理调试工具</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            padding: 24px;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 24px;
+            font-size: 24px;
+        }
+
+        .upload-section {
+            background: #f9f9f9;
+            border: 2px dashed #ddd;
+            border-radius: 8px;
+            padding: 32px;
+            text-align: center;
+            margin-bottom: 24px;
+            transition: all 0.3s;
+        }
+
+        .upload-section.dragover {
+            border-color: #4CAF50;
+            background: #e8f5e9;
+        }
+
+        .upload-section input[type="file"] {
+            display: none;
+        }
+
+        .upload-btn {
+            background: #4CAF50;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px;
+            transition: background 0.3s;
+        }
+
+        .upload-btn:hover {
+            background: #45a049;
+        }
+
+        .options-section {
+            display: flex;
+            gap: 16px;
+            margin-bottom: 24px;
+            flex-wrap: wrap;
+        }
+
+        .option-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .option-group label {
+            font-size: 14px;
+            color: #666;
+        }
+
+        .option-group input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+        }
+
+        .process-btn {
+            background: #2196F3;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background 0.3s;
+        }
+
+        .process-btn:hover:not(:disabled) {
+            background: #1976D2;
+        }
+
+        .process-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+            color: #666;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        .results-section {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+            margin-top: 24px;
+        }
+
+        .result-panel {
+            background: #f9f9f9;
+            border-radius: 8px;
+            padding: 16px;
+        }
+
+        .result-panel h2 {
+            font-size: 18px;
+            color: #333;
+            margin-bottom: 16px;
+        }
+
+        .canvas-container {
+            position: relative;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            overflow: hidden;
+            background: white;
+            max-height: 600px;
+            cursor: grab;
+        }
+
+        .canvas-container:active {
+            cursor: grabbing;
+        }
+
+        #graphCanvas {
+            display: block;
+            cursor: crosshair;
+        }
+
+        .zoom-controls {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            z-index: 10;
+        }
+
+        .zoom-btn {
+            background: rgba(255, 255, 255, 0.9);
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            width: 36px;
+            height: 36px;
+            cursor: pointer;
+            font-size: 18px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s;
+        }
+
+        .zoom-btn:hover {
+            background: rgba(255, 255, 255, 1);
+        }
+
+        .info-panel {
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 12px;
+            max-height: 600px;
+            overflow-y: auto;
+        }
+
+        .info-item {
+            padding: 8px;
+            border-bottom: 1px solid #eee;
+            font-size: 13px;
+        }
+
+        .info-item:last-child {
+            border-bottom: none;
+        }
+
+        .info-label {
+            font-weight: bold;
+            color: #666;
+            margin-right: 8px;
+        }
+
+        .json-viewer {
+            background: #282c34;
+            color: #abb2bf;
+            padding: 16px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            max-height: 600px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .stat-card h3 {
+            font-size: 14px;
+            opacity: 0.9;
+            margin-bottom: 8px;
+        }
+
+        .stat-card .value {
+            font-size: 32px;
+            font-weight: bold;
+        }
+
+        .error {
+            background: #ffebee;
+            color: #c62828;
+            padding: 12px;
+            border-radius: 4px;
+            margin-top: 16px;
+            display: none;
+        }
+
+        .error.active {
+            display: block;
+        }
+
+        .preview-image {
+            max-width: 100%;
+            max-height: 300px;
+            border-radius: 4px;
+            margin-top: 16px;
+        }
+
+        @media (max-width: 1024px) {
+            .results-section {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔍 消防图处理调试工具</h1>
+
+        <!-- 上传区域 -->
+        <div class="upload-section" id="uploadSection">
+            <p style="margin-bottom: 16px; color: #666;">拖拽图片到此处或点击按钮选择文件</p>
+            <button class="upload-btn" onclick="document.getElementById('fileInput').click()">选择图片</button>
+            <input type="file" id="fileInput" accept="image/*">
+            <div id="imagePreview"></div>
+        </div>
+
+        <!-- 处理选项 -->
+        <div class="options-section">
+            <div class="option-group">
+                <input type="checkbox" id="applyPerspective" checked>
+                <label for="applyPerspective">应用透视变换</label>
+            </div>
+            <div class="option-group">
+                <input type="checkbox" id="extractOcr" checked>
+                <label for="extractOcr">提取OCR文本</label>
+            </div>
+            <button class="process-btn" id="processBtn" onclick="processImage()">处理图片</button>
+        </div>
+
+        <!-- 加载提示 -->
+        <div class="loading" id="loading">
+            <p>正在处理图片，请稍候...</p>
+        </div>
+
+        <!-- 错误提示 -->
+        <div class="error" id="error"></div>
+
+        <!-- 统计信息 -->
+        <div class="stats" id="stats" style="display: none;">
+            <div class="stat-card">
+                <h3>节点数量</h3>
+                <div class="value" id="nodeCount">0</div>
+            </div>
+            <div class="stat-card">
+                <h3>边数量</h3>
+                <div class="value" id="edgeCount">0</div>
+            </div>
+            <div class="stat-card">
+                <h3>OCR结果</h3>
+                <div class="value" id="ocrCount">0</div>
+            </div>
+        </div>
+
+        <!-- 结果展示 -->
+        <div class="results-section" id="resultsSection" style="display: none;">
+            <div class="result-panel">
+                <h2>路径图可视化</h2>
+                <div class="canvas-container" id="canvasContainer">
+                    <div class="zoom-controls">
+                        <button class="zoom-btn" onclick="zoomIn()" title="放大">+</button>
+                        <button class="zoom-btn" onclick="zoomOut()" title="缩小">−</button>
+                        <button class="zoom-btn" onclick="resetZoom()" title="重置">⌂</button>
+                    </div>
+                    <canvas id="graphCanvas"></canvas>
+                </div>
+            </div>
+            <div class="result-panel">
+                <h2>数据结构</h2>
+                <div class="json-viewer" id="jsonViewer"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentImage = null;
+        let currentResult = null;
+        let zoomLevel = 1.0;
+        let panX = 0;
+        let panY = 0;
+        let isDragging = false;
+        let lastMouseX = 0;
+        let lastMouseY = 0;
+        let canvas = null;
+        let ctx = null;
+
+        // 文件选择
+        document.getElementById('fileInput').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file) {
+                handleFile(file);
+            }
+        });
+
+        // 拖拽上传
+        const uploadSection = document.getElementById('uploadSection');
+        uploadSection.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadSection.classList.add('dragover');
+        });
+
+        uploadSection.addEventListener('dragleave', () => {
+            uploadSection.classList.remove('dragover');
+        });
+
+        uploadSection.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadSection.classList.remove('dragover');
+            const file = e.dataTransfer.files[0];
+            if (file && file.type.startsWith('image/')) {
+                handleFile(file);
+            }
+        });
+
+        function handleFile(file) {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                currentImage = e.target.result;
+                const preview = document.getElementById('imagePreview');
+                preview.innerHTML = `<img src="${currentImage}" class="preview-image" alt="预览">`;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        async function processImage() {
+            const fileInput = document.getElementById('fileInput');
+            if (!fileInput.files[0]) {
+                showError('请先选择图片文件');
+                return;
+            }
+
+            const applyPerspective = document.getElementById('applyPerspective').checked;
+            const extractOcr = document.getElementById('extractOcr').checked;
+            const processBtn = document.getElementById('processBtn');
+            const loading = document.getElementById('loading');
+            const error = document.getElementById('error');
+
+            // 重置状态
+            processBtn.disabled = true;
+            loading.classList.add('active');
+            error.classList.remove('active');
+            document.getElementById('resultsSection').style.display = 'none';
+
+            try {
+                const formData = new FormData();
+                formData.append('file', fileInput.files[0]);
+                formData.append('apply_perspective', applyPerspective);
+                formData.append('extract_ocr', extractOcr);
+
+                const response = await fetch('/map/process', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || '处理失败');
+                }
+
+                const result = await response.json();
+                currentResult = result.data;
+                
+                // 显示结果
+                displayResults(result);
+                
+            } catch (err) {
+                showError('处理失败: ' + err.message);
+            } finally {
+                processBtn.disabled = false;
+                loading.classList.remove('active');
+            }
+        }
+
+        function displayResults(result) {
+            // 显示统计信息
+            document.getElementById('stats').style.display = 'grid';
+            document.getElementById('nodeCount').textContent = result.nodes_count || 0;
+            document.getElementById('edgeCount').textContent = result.edges_count || 0;
+            document.getElementById('ocrCount').textContent = result.ocr_count || 0;
+
+            // 显示JSON数据
+            document.getElementById('jsonViewer').textContent = JSON.stringify(result.data, null, 2);
+
+            // 绘制路径图
+            drawGraph(result.data);
+
+            // 显示结果区域
+            document.getElementById('resultsSection').style.display = 'grid';
+        }
+
+        function drawGraph(data) {
+            canvas = document.getElementById('graphCanvas');
+            ctx = canvas.getContext('2d');
+            
+            const nodes = data.nodes || [];
+            const edges = data.edges || [];
+            const ocrResults = data.ocr_results || [];
+            const evacuationRoutes = data.evacuation_routes || []; // 疏散路线（国标语义，通常为绿色引导线）
+
+            if (nodes.length === 0) {
+                canvas.width = 800;
+                canvas.height = 600;
+                ctx.fillStyle = '#999';
+                ctx.font = '20px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('没有节点数据', canvas.width / 2, canvas.height / 2);
+                return;
+            }
+
+            // 计算边界
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            nodes.forEach(node => {
+                minX = Math.min(minX, node.x);
+                minY = Math.min(minY, node.y);
+                maxX = Math.max(maxX, node.x);
+                maxY = Math.max(maxY, node.y);
+            });
+
+            // 添加边距
+            const padding = 50;
+            const width = maxX - minX + padding * 2;
+            const height = maxY - minY + padding * 2;
+
+            // 设置画布大小（固定大小，通过变换实现缩放）
+            const container = document.getElementById('canvasContainer');
+            canvas.width = container.clientWidth || 800;
+            canvas.height = container.clientHeight || 600;
+
+            // 清空画布
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // 保存当前变换状态
+            ctx.save();
+
+            // 应用缩放和平移变换
+            ctx.translate(panX, panY);
+            ctx.scale(zoomLevel, zoomLevel);
+
+            // 坐标变换函数（将原始坐标转换为画布坐标）
+            const scaleX = (x) => (x - minX) + padding;
+            const scaleY = (y) => (y - minY) + padding;
+
+            // 绘制疏散路线（国标语义：优先识别绿色引导线/疏散路线；绝不把“所有线条”当通道）
+            if (evacuationRoutes.length > 0) {
+                ctx.strokeStyle = '#4CAF50'; // 绿色
+                ctx.lineWidth = 3 / zoomLevel; // 根据缩放调整线宽
+                ctx.lineCap = 'round';
+                ctx.lineJoin = 'round';
+
+                evacuationRoutes.forEach(route => {
+                    if (route.path && route.path.length > 0) {
+                        ctx.beginPath();
+                        ctx.moveTo(scaleX(route.path[0].x), scaleY(route.path[0].y));
+                        for (let i = 1; i < route.path.length; i++) {
+                            ctx.lineTo(scaleX(route.path[i].x), scaleY(route.path[i].y));
+                        }
+                        ctx.stroke();
+                    }
+                });
+            }
+
+            // 绘制普通边（灰色，作为背景）
+            ctx.strokeStyle = '#999';
+            ctx.lineWidth = 1 / zoomLevel;
+            edges.forEach(edge => {
+                const source = nodes.find(n => n.id === edge.source_node_id);
+                const target = nodes.find(n => n.id === edge.target_node_id);
+                if (source && target) {
+                    ctx.beginPath();
+                    ctx.moveTo(scaleX(source.x), scaleY(source.y));
+                    ctx.lineTo(scaleX(target.x), scaleY(target.y));
+                    ctx.stroke();
+                }
+            });
+
+            // 绘制节点
+            nodes.forEach(node => {
+                const x = scaleX(node.x);
+                const y = scaleY(node.y);
+                
+                // 根据节点类型选择颜色
+                let color = '#666';
+                let radius = 4 / zoomLevel;
+                
+                switch(node.node_type) {
+                    case 'intersection':
+                        color = '#f44336'; // 红色 - 路口
+                        radius = 6 / zoomLevel;
+                        break;
+                    case 'corner':
+                        color = '#ff9800'; // 橙色 - 转角
+                        radius = 5 / zoomLevel;
+                        break;
+                    case 'endpoint':
+                        color = '#2196F3'; // 蓝色 - 端点
+                        radius = 4 / zoomLevel;
+                        break;
+                    case 'facility':
+                        color = '#4CAF50'; // 绿色 - 设施
+                        radius = 7 / zoomLevel;
+                        break;
+                }
+
+                // 绘制节点
+                ctx.fillStyle = color;
+                ctx.beginPath();
+                ctx.arc(x, y, radius, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // 绘制边框
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 2 / zoomLevel;
+                ctx.stroke();
+            });
+
+            // 恢复变换状态
+            ctx.restore();
+
+            // 绘制标注（不受缩放影响，始终清晰可见）
+            ctx.save();
+            // 标注使用屏幕坐标，不受变换影响
+            nodes.forEach(node => {
+                const x = scaleX(node.x);
+                const y = scaleY(node.y);
+                const screenX = x * zoomLevel + panX;
+                const screenY = y * zoomLevel + panY;
+
+                // 只绘制在可见区域内的标注
+                if (screenX >= -100 && screenX <= canvas.width + 100 && 
+                    screenY >= -100 && screenY <= canvas.height + 100) {
+                    
+                    // 绘制设施标注（固定大小，不受缩放影响）
+                    if (node.facility_type) {
+                        const facilityLabels = {
+                            'elevator': '电梯',
+                            'toilet': '卫生间',
+                            'stairs': '楼梯',
+                            'exit': '出口',
+                            'fire_hydrant': '消防栓',
+                            'room': '房间'
+                        };
+                        const label = facilityLabels[node.facility_type] || node.facility_type;
+                        
+                        // 绘制标注背景
+                        ctx.fillStyle = 'rgba(76, 175, 80, 0.9)';
+                        ctx.font = '12px Arial';
+                        ctx.textAlign = 'center';
+                        const textWidth = ctx.measureText(label).width;
+                        const textHeight = 14;
+                        ctx.fillRect(screenX - textWidth/2 - 4, screenY - 20, textWidth + 8, textHeight + 4);
+                        
+                        // 绘制标注文本
+                        ctx.fillStyle = '#fff';
+                        ctx.fillText(label, screenX, screenY - 8);
+                    }
+                    
+                    // 绘制房间号标注（固定大小，不受缩放影响）
+                    if (node.ocr_text && (!node.facility_type || node.facility_type === 'room')) {
+                        ctx.fillStyle = 'rgba(33, 150, 243, 0.9)';
+                        ctx.font = '11px Arial';
+                        ctx.textAlign = 'center';
+                        const textWidth = ctx.measureText(node.ocr_text).width;
+                        const textHeight = 13;
+                        ctx.fillRect(screenX - textWidth/2 - 4, screenY + 15, textWidth + 8, textHeight + 4);
+                        
+                        ctx.fillStyle = '#fff';
+                        ctx.fillText(node.ocr_text, screenX, screenY + 28);
+                    }
+                }
+            });
+
+            // 绘制OCR结果标注
+            ocrResults.forEach(ocr => {
+                const x = scaleX(ocr.center_x);
+                const y = scaleY(ocr.center_y);
+                const screenX = x * zoomLevel + panX;
+                const screenY = y * zoomLevel + panY;
+
+                if (screenX >= -100 && screenX <= canvas.width + 100 && 
+                    screenY >= -100 && screenY <= canvas.height + 100) {
+                    
+                    // 检查是否已经有节点关联了这个OCR
+                    const hasNode = nodes.some(n => 
+                        Math.abs(n.x - ocr.center_x) < 10 && 
+                        Math.abs(n.y - ocr.center_y) < 10
+                    );
+                    
+                    if (!hasNode) {
+                        // 绘制文本框背景（固定大小）
+                        ctx.fillStyle = 'rgba(255, 255, 0, 0.7)';
+                        ctx.font = '10px Arial';
+                        ctx.textAlign = 'center';
+                        const text = ocr.text.substring(0, 8);
+                        const textWidth = ctx.measureText(text).width;
+                        ctx.fillRect(screenX - textWidth/2 - 4, screenY - 10, textWidth + 8, 14);
+                        
+                        // 绘制文本
+                        ctx.fillStyle = '#333';
+                        ctx.fillText(text, screenX, screenY + 2);
+                    }
+                }
+            });
+
+            ctx.restore();
+
+            // 添加图例（不受缩放影响）
+            drawLegend(ctx, canvas.width - 150, 20);
+            
+            // 添加交互事件（只设置一次）
+            if (!canvas._interactionsSetup) {
+                setupCanvasInteractions();
+                canvas._interactionsSetup = true;
+            }
+        }
+
+        function setupCanvasInteractions() {
+            const container = document.getElementById('canvasContainer');
+            
+            // 鼠标滚轮缩放
+            container.addEventListener('wheel', (e) => {
+                e.preventDefault();
+                const delta = e.deltaY > 0 ? 0.9 : 1.1;
+                zoomLevel *= delta;
+                zoomLevel = Math.max(0.1, Math.min(5.0, zoomLevel));
+                applyTransform();
+                redrawGraph();
+            });
+
+            // 鼠标拖拽平移
+            container.addEventListener('mousedown', (e) => {
+                if (e.button === 0) { // 左键
+                    isDragging = true;
+                    lastMouseX = e.clientX;
+                    lastMouseY = e.clientY;
+                    container.style.cursor = 'grabbing';
+                }
+            });
+
+            container.addEventListener('mousemove', (e) => {
+                if (isDragging) {
+                    const dx = e.clientX - lastMouseX;
+                    const dy = e.clientY - lastMouseY;
+                    panX += dx;
+                    panY += dy;
+                    lastMouseX = e.clientX;
+                    lastMouseY = e.clientY;
+                    applyTransform();
+                    redrawGraph();
+                }
+            });
+
+            container.addEventListener('mouseup', () => {
+                isDragging = false;
+                container.style.cursor = 'grab';
+            });
+
+            container.addEventListener('mouseleave', () => {
+                isDragging = false;
+                container.style.cursor = 'grab';
+            });
+        }
+
+        function zoomIn() {
+            zoomLevel *= 1.2;
+            zoomLevel = Math.min(5.0, zoomLevel);
+            redrawGraph();
+        }
+
+        function zoomOut() {
+            zoomLevel *= 0.8;
+            zoomLevel = Math.max(0.1, zoomLevel);
+            redrawGraph();
+        }
+
+        function resetZoom() {
+            zoomLevel = 1.0;
+            panX = 0;
+            panY = 0;
+            redrawGraph();
+        }
+
+        function redrawGraph() {
+            if (currentResult) {
+                drawGraph(currentResult);
+            }
+        }
+
+        function drawLegend(ctx, x, y) {
+            const legend = [
+                { label: '路口', color: '#f44336' },
+                { label: '转角', color: '#ff9800' },
+                { label: '端点', color: '#2196F3' },
+                { label: '设施', color: '#4CAF50' },
+                { label: '疏散路线', color: '#4CAF50', line: true }
+            ];
+
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+            ctx.strokeStyle = '#ddd';
+            ctx.lineWidth = 1;
+            ctx.fillRect(x - 10, y - 10, 140, legend.length * 25 + 10);
+            ctx.strokeRect(x - 10, y - 10, 140, legend.length * 25 + 10);
+
+            legend.forEach((item, index) => {
+                const yPos = y + index * 25;
+                
+                if (item.line) {
+                    // 绘制线条
+                    ctx.strokeStyle = item.color;
+                    ctx.lineWidth = 3;
+                    ctx.beginPath();
+                    ctx.moveTo(x - 5, yPos);
+                    ctx.lineTo(x + 5, yPos);
+                    ctx.stroke();
+                } else {
+                    // 绘制颜色点
+                    ctx.fillStyle = item.color;
+                    ctx.beginPath();
+                    ctx.arc(x, yPos, 5, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+                
+                // 绘制标签
+                ctx.fillStyle = '#333';
+                ctx.font = '12px Arial';
+                ctx.textAlign = 'left';
+                ctx.fillText(item.label, x + 15, yPos + 4);
+            });
+        }
+
+        function showError(message) {
+            const error = document.getElementById('error');
+            error.textContent = message;
+            error.classList.add('active');
+        }
+    </script>
+</body>
+</html>
